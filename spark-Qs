@@ -1,0 +1,319 @@
+
+Q 1: what would be following code do:
+df.na.drop(2)
+
+A. drop initial 2 rows
+B. drop rows with 2 null values for columns
+C. drop last 2 rows
+d. drop rows with minimum 2 column values equal to null
+E. drop rows with maximum 2 column values equal to null
+
+Ans.: d. drop rows with minimum 2 column values equal to null
+
+Explanation: specification of drop function with na is to drop rows considerimng minimum int value
+
+Topic: Common 
+Q 2: write operation on RDD is ?
+A. coarse grained	
+B. fine grained 
+C. Both fine grained and coarse grained
+D. Runs always on NODE_LOCAL
+E. Run always on PROCESS_LOCAL
+
+Ans.: A. Coarse grained
+
+Explanation:  it means that you can write you transformations to be applied to the whole dataset, but not individual elements on the dataset. Operations like map, filter, group reduce, but not get(index) or set(index).
+
+Q 3:  In Spark, RDD storage level defined as MEMORY_ONLY_2 , what does _2 means ?
+A. replicas
+B. partitions
+C. shuffling level
+D. buckets
+E. executors
+
+Ans.: A. Replicas
+
+Explanation: storage level MEMORY_ONLY_2 indicates spark transformations are being carried in memory and there are 2 replicas maintained for the same
+
+
+
+
+Q 4:  To adjust how long Spark will wait before it times out on each of the phases of data, spark.locality.* config can contain which of the following phase is not present in configuration?
+A. data local
+B. process local
+C. node local
+D. stage local
+
+Ans.: D. Stage local
+
+Explanation: 4 stages of configuration are data, process, node and rack local.
+
+
+
+
+Topic: Advanced implementation
+Q 5:  For 100 rules, spark.default.parallelism = 50, number of stages per task = 3, how much would be total number of tasks?
+A. 15,000
+B. 150
+C. 5,000
+D. 300
+E. 1500
+
+Ans.: A. 15,000
+Explanation: number of jobs = 100
+• number of stages per job = 3
+• number of tasks per job = 3 * 50 = 150
+• total number of tasks = 100 * 150 = 15,000
+
+
+
+
+Q 6:  what would be output of following operations on spark dataframe:
+val test = sqlContext.read.json(sc.parallelize(Seq("""{"a":1,"b":[2,3]}""")))
+test.withColumn("b", explode($"b")).show
+
+A. 
++---+---+
+|  a|  b|
++---+---+
+|  1|  2|
+|  1|  3|
++---+---+
+B. 
++---+---+
+|  a|  b|
++---+---+
+|  1|  2|
++---+---+
+C.
++---+---+
+|  a|  b|
++---+---+
+|  1|  3|
++---+---+
+D.
++---+
+|  b|
++---+
+|  2|
+|  3|
++---+
+E.
++---+
+|  b|
++---+
+|  2|
+|  2|
++---+
+Ans.: A. 
++---+---+
+|  a|  b|
++---+---+
+|  1|  2|
+|  1|  3|
++---+---+
+
+Explanation: 
+Explode function on dataframe column is used to flatten nested columns or array of columns.
+
+Q 7:  If your RDD is so large that all of it's elements won't fit in memory on the drive machine then which of the following is not recommended and would cause performance and memory issues?
+
+A. take()
+B. takeSample()
+C. collect()
+D. show()
+E. top()
+
+Ans.: C. collect()
+
+Explanation: 
+if RDD size is too large, then collect() is not recommended as it would take entire RDD into memory and data might be too big to fit into memory, you can write out RDD to files or export the RDD to a databse that is large enough to hold all the data.
+
+Q 8:  which of the following is incorrect on spark joins?
+A. if spark.sql.crossJoin.enabled = false then select * from A inner join B doesn’t throw an error
+B. if spark.sql.crossJoin.enabled = false then select * from A cross join B doesn't throw an error
+C. if spark.sql.crossJoin.enabled = true then select * from A inner join B doesn't throw an error
+D.  if spark.sql.crossJoin.enabled = true then select * from A cross join B doesn't throw an error
+Ans.: A. if spark.sql.crossJoin.enabled = false then select * from A inner join B doesn’t throw an error
+
+Explanation: 
+if spark.sql.crossjoin.enabled is set to false then inner join throws an error
+Q 9.:  In spark to predict CPU/task resources, which of the following formulas or equations would be incorrect or not fit for calculation estimation of resources?
+A. number of jobs = number of output ops
+B. number of stages per job = number of shuffles + 1
+C. number of tasks per job = number of stages * number of partitions
+D. number of stages = number of tasks
+E. number of tasks = number of jobs
+
+Ans.: E. number of tasks = number of jobs
+Explanation: 
+Each job can have multiple stages and each stage can have number of tasks associated with it so number of tasks would be greater than number of jobs.
+
+Q 10:  For an 8 core executor, with 15 second micro-batch duration and For 100 rules, spark.default.parallelism = 50, number of stages per task = 3, what would be average task time?
+A. 324 ms
+B. 394 ms
+C. 424 ms
+D. 494 ms
+E. 294 ms
+Ans.: B. 394 ms
+Explanation: 
+ number of jobs = 100
+• number of stages per job = 3
+• number of tasks per job = 3 * 50 = 150
+• total number of tasks = 100 * 150 = 15,000
+50 instances * 8 cores = 400 task slots
+Number of waves = 15,000/400 = 38 waves
+Q 11:  which of the following cannot be used for offset management in Spark version 1.6.0 with messaging queue kafka?
+A. checkpoint(“checkpoint_dir”)
+B. zookeeper
+C. hbase
+D. kafka
+E. RDBMS
+
+Ans.: D. Kafka
+
+Explanation: Spark 2.1.0 onwards we can do offset management using kafka itself. In spark 1.6.0 or previous only zookeeper, hbase or any db, checkpoint where the only options available
+
+Q 12: which of following is true for wide transformation?
+A. Data required to compute resides on multiple partitions
+B. Data required to compute resides on single partition
+C. There can only be single replica for the dataset with wide transformation
+d. No caching can be done for wide transformations
+E. They are not lazily evaluated
+
+Ans.: A. Data required to compute resides on multiple partitions
+
+Explanation: Wide transformation means data resides on multiple partitions .
+e.g. reduceByKey
+
+
+
+
+Q 13: which of following statement is correct for following code:
+df.filter($"High">500).count()*1.0/df.count())*100
+
+A. Extract What percentage of the time was the High greater than $500
+B. Extract What was mean of the time was the High greater than $500
+C. Extract What was the count of the time was the High greater than $500
+d. Extract What std dev of the time was the High greater than $500
+E. Throws Error as can’t do multiplication and division on output of transformation
+
+Ans.: A. Extract What percentage of the time was the High greater than $500
+
+Explanation: This formula is used to calculate percentage in spark df
+
+
+Q 14:  To maintain state while performing map operation i.e. in spark mapWithState which of the following is optional to be initialised?
+
+A. checkpoint(“checkpoint_dir”)
+B. partitions()
+C. initialState(initialStateDataFrame)
+D. StateFunc 
+E. remember(60 seconds)
+
+Ans.: E. Remember(60 seconds)
+
+Explanation: Remember() function is optional and its not mandate to be used with mapWithState
+
+
+Q 15:  When spark action is triggered, which of following configuration decides maximum number of output files in spark?
+A. mapred.reduce.tasks
+B. spark.sql.shuffle.partitions
+C. spark.shuffle.tasks
+d. spark.partitions
+E. spark.coalesce.partitions
+
+Ans.: B. spark.sql.shuffle.partitions
+
+Explanation: spark.sql.shuffle.partitions is default set to 200, which means based on executor and number of cores, maximum 200 small files would get created
+
+
+Q 16:  spark model evaluation with MulticlassMetrics, which of the following statement is incorrect?
+A. Need to import org.apache.spark.mllib.evaluation.MulticlassMetrics
+B. pNeed to instantiate with label as below
+// Need to convert to RDD to use this
+val predictionAndLabels = results.select($"prediction",$"label").as[(Double, Double)].rdd
+// Instantiate metrics object
+val metrics = new MulticlassMetrics(predictionAndLabels)
+
+C. can create confusion matrix as metrics.confusionMatrix
+D. can create two dimentional metrics as metrics.ofDim
+
+Ans.: D. can create two dimentional metrics as metrics.ofDim
+
+Explanation: There is no function called as ofDim on MulticlassMetrics
+Q 17: which of following is not an transformation
+A. reduceByKey
+B. aggregateByKey
+C. sumByKey
+D. countByKey
+E. sample
+
+Ans.: c. SumByKey
+
+Explanation: sumByKey is not an spark transformation
+
+Q 18:  which of the following is incorrect way to calculate standard deviation using spark transformations?
+
+A. selectedData.groupBy($"user").agg(stdev($"duration"))
+B. selectedData.groupBy($"user").agg((sqrt( avg($"duration" * $"duration") - avg($"duration") * avg($"duration"))).alias("duration_sd"))
+C. val stdevduration = duration.groupByKey().mapValues(value => org.apache.spark.util.StatCounter(value).stddev)
+D. df.registerTempTable("df")
+sqlContext.sql("""SELECT user, stddev(duration) FROM df GROUP BY user""")
+E. df.registerTempTable("df")
+hiveContext.sql("""SELECT user, stddev(duration) FROM df GROUP BY user""")
+
+Ans.: A. selectedData.groupBy($"user").agg(stdev($"duration"))
+
+Explanation: 
+It would give compiler error on stddev as stddev is not valid function, right function is stddev_pop. Hence answer is: selectedData.groupBy($"user").agg(stdev_pop($"duration"))
+
+Q 19:  which of the following does not take collection aggregateByKey or reduceByKey and throw error from following?
+A. val resReduce = pairs.reduceByKey(_ + _) 
+B. val resAgg = pairs.aggregateByKey(0)(_+_,_+_)
+C. val sets = pairs.aggregateByKey(new HashSet[Int])(_+_, _++_)
+D. val sets = pairs.reduceByKey(new HashSet[Int])(_ + _)
+E. val sets = pairs.aggregateByKey(0)((k,v) => v.toInt +k,(v,k) => k+v)
+
+Ans.: D. val sets = pairs.reduceByKey(new HashSet[Int])(_ + _)
+
+Explanation: 
+reduceByKey doesnt works on hashset and it works only between partitions
+
+Q 20:  which of the following would not be helpful to avoid exception from following code:
+
+JavaStreamingContext jssc = new JavaStreamingContext(sc, INTERVAL);
+
+// This enables checkpointing.
+jssc.checkpoint("/tmp/checkpoint_test");
+
+JavaDStream<String> dStream = jssc.socketTextStream("localhost", 9999);
+
+NotSerializable notSerializable = new NotSerializable();
+dStream.foreachRDD(rdd -> {
+      if (rdd.count() == 0) {
+        return null;
+      }
+      String first = rdd.first();
+
+      notSerializable.doSomething(first);
+      return null;
+    }
+);
+
+A. Turning off checkpointing
+
+B. Make the object being used Serializable.
+
+C. Declare NotSerializable inside forEachRDD function.
+
+D. Removing notSerializable object creation code 
+
+E. Use collect instead of foreachRDD
+
+Ans.: D. Removing notSerializable object creation code 
+
+Explanation: 
+code would cause "ERROR OneForOneStrategy: java.io.NotSerializableException
+To avoid exception any of option A, B or C, E should be done
+
