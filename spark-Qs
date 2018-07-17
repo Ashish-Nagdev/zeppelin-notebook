@@ -317,3 +317,360 @@ Explanation:
 code would cause "ERROR OneForOneStrategy: java.io.NotSerializableException
 To avoid exception any of option A, B or C, E should be done
 
+
+
+
+
+
+38. Consider a dataframe df is ordered by Day in an increasing order, then by value in a descending order : 
+
++----+--------+----------+
+|Day |Type    |Value 	 |
++----+--------+----------+
+|   0|   cat26|      30.9|
+|   0|   cat13|      22.1|
+|   0|   cat95|      19.6|
+|   0|  cat105|       1.3|
+|   1|   cat67|      28.5|
+|   1|    cat4|      26.8|
+|   1|   cat13|      12.6|
+|   1|   cat23|       5.3|
+|   2|   cat56|      39.6|
+|   2|   cat40|      29.7|
+|   2|  cat187|      27.9|
+|   2|   cat68|       9.8|
+|   3|    cat8|      35.6|
+| ...|    ....|      ....|
++----+--------+----------+
+
+If we want expected result to be as
++----+--------+----------+
+|Day |Type    |Value     |
++----+--------+----------+
+|   0|   cat26|      30.9|
+|   1|   cat67|      28.5|
+|   2|   cat56|      39.6|
+|   3|    cat8|      35.6|
+| ...|     ...|       ...|
++----+--------+----------+
+
+which of the following would be true:
+
+A. val w = Window.partitionBy($"Day").orderBy($"Value".desc)
+val dfTop = df.withColumn("rn", row_number.over(w)).where($"rn" === 1).drop("rn")
+dfTop.show
+
+B. val dfMax = df.groupBy($"Day".as("max_day")).agg(max($"Value").as("max_value"))
+val dfTopByJoin = df.join(broadcast(dfMax),
+    ($"Day" === $"max_day") && ($"Value" === $"max_value"))
+  .drop("max_day")
+  .drop("max_value")
+  .show
+  
+C. val data = df.groupBy("Day").agg(first("Day").as("_1"),first("Type").as("Type"),first("Value").as("Value")).drop("Day")
+data.withColumnRenamed("_1","Day").show
+
+D. val keys = List("Day", "Type");
+ val selectFirstValueOfNoneGroupedColumns = 
+ df.columns
+   .filterNot(keys.toSet)
+   .map(_ -> "first").toMap
+ val grouped = 
+ df.groupBy(keys.head, keys.tail: _*)
+   .agg(selectFirstValueOfNoneGroupedColumns)
+
+E. sqlContext.sql("select Day, vs.Type, vs.Value from (select Day, max(struct(Value, Type)) as vs from table group by Day)").show(false)
+
+Ans. A,B,E
+
+Explanation: C, D won't produce expected result as they would produce as per open jira on Spark.
+
+
+
+39. For following dataframe df:
+
++----+-----+---+-----+
+| id |  key| va|cnt  |
++----+-----+---+-----+
+|   a|pref1|  b|  168|
+|   a|pref3|  h|  168|
+|   a|pref3|  t|   63|
+|   a|pref3|  k|   84|
+|   a|pref1|  e|   84|
+|   a|pref2|  z|  105|
++----+-----+---+-----+
+
+how can we get
++----+-----+---+----------+
+|  id|  key| va|max(cnt)  |
++----+-----+---+----------+
+|   a|pref1|  b|       168|
+|   a|pref3|  h|       168|
+|   a|pref2|  z|       105|
++----+-----+---+----------+
+
+Select from following which can lead to expected result:
+
+A. val maxXount = df.groupBy("id", "key").agg(max("cnt") as "max(cnt)")
+maxCount.join(df, Seq("id", "key")).where($"max(cnt)" === $"cnt").show
+
+B. df.groupBy("id", "key").max("cnt").alias("max(cnt)")
+
+C. w = Window.partitionBy("id", "key")
+df.withColumn("max_cnt", max_("cnt").over(w))
+
+D. val w = Window.partitionBy("id","key").orderBy(col("cnt").desc)
+df.withColumn("rank", dense_rank().over(w)).select("id", "key","va","cnt").where("rank == 1").show
+
+Ans. A,C,D
+
+Explanation: B misses va column
+
+
+40. Consider following dataframe df:
+
+e_name  RPA_1    RPA_2    RPA_3    RPA_4
+A  		  2        1       2.1      5.4
+B	     1.5      0.5      0.9      3.7
+C		 7        2.9      9.1      2.5
+
+We need to extract max RPA for each employee. Expected result dataframe is:
+
+|e_name  | max_RPA    |
+|--------|------------|
+| A		 | 5.4		  |
+| B		 | 3.7	      |
+| C		 | 9.1		  |
+
+Choose the correct from following:
+
+A. df.withColumn("max_RPA", maxval($"RPA_1", $"RPA_2", $"RPA_3", $"RPA_4"))
+  .select("e_name", "max_RPA").show
+  
+B. val finalDf = df.withColumn("e_name", maxValAsMap(keys, values)).select("e_name", "max_RPA")
+
+val maxValAsMap = udf((keys: Seq[String], values: Seq[Any]) => {
+    val valueMap:Map[String,Double] = (keys zip values).filter( _._2.isInstanceOf[Double] ).map{
+      case (x,y) => (x, y.asInstanceOf[Double])
+    }.toMap
+    if (valueMap.isEmpty) "not computed" else valueMap.maxBy(_._2)._1
+  })
+  
+C. val dfOut = df.rdd
+  .map(r => (
+       r.getString(0),
+       r.getValuesMap[Double](r.schema.fieldNames.filter(_!="e_name"))
+     ))
+  .map{case (n,m) => (n,m.maxBy(_._2)._1)}
+  .toDF("e_name","max_RPA")
+  
+ D. val maxRPA = maxval($"RPA_1", $"RPA_2", $"RPA_3", $"RPA_4")
+ df.withColumn("max_RPA",maxRPA).drop($"RPA_1", $"RPA_2", $"RPA_3", $"RPA_4").show
+ 
+ 
+ Ans. A,B,C
+ 
+ Explanation: D would give issue on drop syntax; need to drop each RPA
+
+
+ 41. Consider a dataframe df as
+
+id  co   value
+1   US    50
+1   UK    100
+1   Ind   125
+2   US    75
+2   UK    150
+2   Ind   175
+
+we need to convert it and expected df is
+
+id  US  UK   Ind
+1   50  100  125
+2   75  150  175
+
+choose the correct ways to achieve it from following:
+
+A. val countryValue = udf{(countryToCheck: String, countryInRow: String, value: Long) =>
+  if(countryToCheck == countryInRow) value else 0
+}
+val countryFuncs = countries.map{country => (dataFrame: DataFrame) => dataFrame.withColumn(country, countryValue(lit(country), df("co"), df("value"))) }
+val dfWithCountries = Function.chain(countryFuncs)(df).drop("co").drop("value")
+dfWithCountries.groupBy("id").sum(countries: _*).show
+
+B. val countries = List("US", "UK", "Ind")
+val numCountries = countries.length - 1 
+
+var query = "select *, "
+for (i <- 0 to numCountries-1) {
+  query += """case when co = """" + countries(i) + """" then value else 0 end as """ + countries(i) + ", "
+}
+query += """case when co = """" + countries.last + """" then value else 0 end as """ + countries.last + " from myTable"
+
+myDataFrame.registerTempTable("myTable")
+val myDF1 = sqlContext.sql(query)
+
+C. spark.sql("select * from countries ").groupBy($"id").pivot("co").agg(min($"value")).show()
+
+D. df.groupBy(col("id"))
+        .pivot("co")
+        .agg(avg(col("value")));
+		
+E. df.groupBy("item_id").pivot("week_id").agg(first("sale_amount")).show
+		
+Ans.: A,B,E
+
+Explanation: C,D would result incorrect value after pivot
+
+
+42. How we can optimize shuffle operation spill in Apache Spark 1.6+ application?
+Choose from following:
+
+A. By increasing shuffle buffer - spark.storage.memoryFraction 
+
+B. Doing repartition() so that you have smaller partitions from input
+
+C. By increasing spark.executor.memory
+
+D. By increasing SPARK_WORKER_CORES
+
+E. By increasing SPARK_DRIVER_MEMORY
+
+Ans.: B,C,D
+
+Explanation: A was deprecated in spark1.5 and is no longer used and E doesn't help in shuffle spill
+
+
+43. Given a dataframe df as
+id |       date
+---------------
+ 1 | 2018-09-01
+ 2 | 2018-09-01
+ 1 | 2018-09-03
+ 1 | 2018-09-04
+ 2 | 2018-09-04
+ 
+create a running counter, grouped by the same id and sorted by date in that group and expected result is
+
+id |       date |  counter
+--------------------------
+ 1 | 2018-09-01 |        1
+ 1 | 2018-09-03 |        2
+ 1 | 2018-09-04 |        3
+ 2 | 2018-09-01 |        1
+ 2 | 2018-09-04 |        2
+ 
+ Choose correct answers from following
+ 
+A. val w = Window.partitionBy("id").orderBy("date")
+val resultDF = df.select( df("id"), rowNumber().over(w) )
+
+B. val df = sqlContext.sql("select 1, '2018-09-01'"
+    ).unionAll(sqlContext.sql("select 2, '2018-09-01'")
+    ).unionAll(sqlContext.sql("select 1, '2018-09-03'")
+    ).unionAll(sqlContext.sql("select 1, '2018-09-04'")
+    ).unionAll(sqlContext.sql("select 2, '2018-09-04'"))
+
+	df.rdd.groupBy(r => r(0)).map(g => g._2.toList.sortBy(row => row(1).toString).zipWithIndex).collect()
+	
+C.  val w = Window.partitionBy($"id").orderBy($"date")
+    df.select($"id", $"date", rowNumber.over(w).alias("counter")).show
+	
+D. val dfDuplicate = df.selecExpr("id as idDup", "date as dateDup")
+val dfWithCounter = df.join(dfDuplicate,$"id"===$"idDup")
+                      .where($"date"<=$"dateDup")
+                      .groupBy($"id", $"date")
+                      .agg($"id", $"date", count($"idDup").as("counter"))
+                      .select($"id",$"date",$"counter")
+					  
+E. df.select("id", "date", 
+          rank().over(Window.partitionBy("id").orderBy("date")).alias("counter")).show()
+		  
+Ans.: A,B,C,D
+
+Explanation: E would give RANK to each row and won't act as counter
+
+
+44. Consider a PySpark DataFrame containing 
+
+col_1	col_2	col_3
+1		2		3
+2		1		2
+3		4		5
+
+Convert to output dataframe by taking max of each column, output df -
+col_4
+3
+2
+5
+
+Select correct answers from following:
+
+A. df.select(greatest("a", "b", "c"))
+
+B. def row_max_with_name(*cols):
+    cols_ = [struct(col(c).alias("value"), lit(c).alias("col")) for c in cols]
+    return greatest(*cols_).alias("greatest({0})".format(",".join(cols)))
+
+ maxs = df.select(row_max_with_name("a", "b", "c").alias("col_4"))
+ 
+ C. df.select( lit('col_1').alias('cn1'), min(df.col_1).alias('col_1'),
+           lit('col_2').alias('cn2'), min(df.col_2).alias('col_2'),
+           lit('col_3').alias('cn3'), min(df.col_3).alias('col_3')
+          )\
+         .rdd.flatMap(lambda r: [ (r.cn1, r.col_1), (r.cn2, r.col_2), (r.cn3, r.col_3)])\
+         .toDF(['Columnn', 'col_4']).select("col_4").show()
+		 
+D. ((_, c), ) = (maxs
+    .groupBy(col("maxs")["col"].alias("col"))
+    .count()
+    .agg(max(struct(col("count"), col("col"))))
+    .first())
+
+df.select(c)
+
+E. def row_max(*cols):
+    return reduce(
+        lambda x, y: when(x > y, x).otherwise(y),
+        [col(c) if isinstance(c, str) else c for c in cols]
+    )
+	df.select(row_max("a", "b", "c").alias("col_4")))
+	
+Ans. A,B,D,E
+
+Explanation: C would result in max of column
+
+
+45. How to change case of all row values in pySpark dataframe to lower case or upper case?
+Choose all correct answers from following:
+
+A. self.df_db1 =self.df_db1.toDF(*[c.lower() for c in self.df_db1.columns])
+
+B. 
+val fields = df.schema.fields
+val stringFields = df.schema.fields.filter(f => f.dataType == StringType)
+val nonStringFields = df.schema.fields.filter(f => f.dataType != StringType).map(f => f.name).map(f => col(f))
+
+val stringFieldsTransformed = stringFields .map (f => f.name).map(f => upper(col(f)).as(f))
+val df = sourceDF.select(stringFieldsTransformed ++ nonStringFields: _*)
+
+C.
+ fields = sourceDF.schema.fields
+stringFields = filter(lambda f: isinstance(f.dataType, StringType), fields)
+nonStringFields = map(lambda f: col(f.name), filter(lambda f: not isinstance(f.dataType, StringType), fields))
+stringFieldsTransformed = map(lambda f: upper(col(f.name)), stringFields) 
+allFields = [*stringFieldsTransformed, *nonStringFields]
+df = sourceDF.select(allFields)
+
+D. for col in df.columns:
+    df = sourceDF.withColumn(col, F.lower(F.col(col)))
+	
+E. expression = [ psf.lower(psf.col(x)).alias(x) for x in sourceDF.columns ]
+
+Ans. C,D,E
+
+Explanation: B is also correct but it will convert numerical values into strings and A is used only for headers
+
+
+
+
