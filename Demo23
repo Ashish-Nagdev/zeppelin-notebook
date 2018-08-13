@@ -1,1 +1,551 @@
 This is just an sample for demo
+Feature: Subtraction
+
+  Scenario: Subtract two numbers
+    Given I have entered 50 into the calculator
+    And I have entered 40 into the calculator
+    When I press subtract
+    Then the result should be 10
+
+
+
+
+
+
+package com.df.dv.consumer.streaming;
+
+import java.io.IOException;
+import java.io.Serializable;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Properties;
+import java.util.Set;
+
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+import org.apache.spark.streaming.api.java.JavaStreamingContext;
+import org.apache.spark.streaming.api.java.JavaStreamingContextFactory;
+
+import com.df.dv.consumer.conf.StreamingConfig;
+import com.df.dv.consumer.utils.Constants;
+import com.df.dv.consumer.utils.Utilities;
+
+public class SparkStreaming implements Serializable {
+
+	private static final long serialVersionUID = -8132037095034929241L;
+	static Logger driverLogger = LogManager.getLogger(SparkStreaming.class);
+
+	public static void main(String args[]) throws IOException {
+		String sparkapp = StreamingConfig.getJavaSparkContext().appName().toLowerCase();
+		String deploytype = args[0].toLowerCase();
+		int batchDuration = Integer.parseInt(args[1]);
+		String enableOffsetManagement = args[2].toLowerCase();
+		boolean enableAccumulator = Boolean.parseBoolean(args[3].toLowerCase());
+
+		StreamingConfig.getApplicationConfig().setAppName(sparkapp);
+
+		// Accumulator<Double> totalCount =
+		// StreamingConfig.getJavaSparkContext().doubleAccumulator(0.0,
+		// "totalCount");
+
+		Utilities utils = new Utilities();
+
+		Map<String, String> kafkaParams = new HashMap<>();
+
+		Properties props = utils.getProperties(deploytype);
+
+		if (props.isEmpty()) {
+			driverLogger.error("exiting streaming application ");
+			System.exit(1);
+		}
+
+		StreamingConfig.getApplicationConfig().loadConfigForApp(props);
+
+		kafkaParams.put("metadata.broker.list", props.getProperty("metadata.broker.list"));
+		Set<String> topics = (Set<String>) Collections.singleton(props.getProperty("kafkaTopic"));
+
+		driverLogger.debug("kafkaParams: metadata.broker.list : " + kafkaParams.get("metadata.broker.list"));
+		driverLogger.debug("kafka topics: " + topics.toString());
+
+		String appMasterDirectory = props.getProperty(Constants.MASTERCONFDIR);
+
+		Utilities u = new Utilities();
+
+		try {
+			if (u.startApplication(sparkapp, appMasterDirectory) == false) {
+				driverLogger.error("Marker file not available for application" + sparkapp);
+				System.exit(1);
+			} else {
+				driverLogger.info("Application Marker file created");
+				driverLogger.info("Marker file available for application" + sparkapp);
+			}
+		} catch (Exception e) {
+			driverLogger.error("Error occured while starting application {}", e);
+			System.exit(1);
+		}
+
+		String markerLocation = u.getMarkerLocation(sparkapp, appMasterDirectory);
+		String checkpointDir = u.getCheckpointLocation(sparkapp, appMasterDirectory);
+
+		if (enableOffsetManagement.equals("true")) {
+
+			JavaStreamingContext ssc = JavaStreamingContext.getOrCreate(checkpointDir,
+					new JavaStreamingContextFactory() {
+						@Override
+						public JavaStreamingContext create() {
+							return StreamProcessor.createStreamingContext(checkpointDir, kafkaParams, topics,
+									markerLocation, enableAccumulator, batchDuration);
+						}
+					});
+
+			ApplicationHeartBeat beat = new ApplicationHeartBeat(ssc, markerLocation);
+			beat.startMonitoring();
+
+			ssc.start();
+
+			ssc.awaitTermination();
+		} else {
+			JavaStreamingContext ssc = StreamProcessor.createStreamingContext(checkpointDir, kafkaParams, topics,
+					markerLocation, enableAccumulator, batchDuration);
+			ApplicationHeartBeat beat = new ApplicationHeartBeat(ssc, markerLocation);
+			beat.startMonitoring();
+
+			ssc.start();
+
+			ssc.awaitTermination();
+		}
+	}
+
+}
+
+
+
+
+package com.df.dv.consumer.streaming;
+
+import java.io.PrintWriter;
+import java.io.Serializable;
+import java.io.StringWriter;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+import org.apache.spark.Accumulator;
+import org.apache.spark.api.java.JavaPairRDD;
+import org.apache.spark.api.java.function.Function3;
+import org.apache.spark.api.java.function.VoidFunction;
+import org.apache.spark.streaming.Durations;
+import org.apache.spark.streaming.State;
+import org.apache.spark.streaming.StateSpec;
+import org.apache.spark.streaming.api.java.JavaDStream;
+import org.apache.spark.streaming.api.java.JavaMapWithStateDStream;
+import org.apache.spark.streaming.api.java.JavaPairDStream;
+import org.apache.spark.streaming.api.java.JavaPairInputDStream;
+import org.apache.spark.streaming.api.java.JavaStreamingContext;
+import org.apache.spark.streaming.kafka.KafkaUtils;
+
+import com.df.dv.consumer.conf.ApplicationConfig;
+import com.df.dv.consumer.conf.StreamingConfig;
+import com.df.dv.consumer.model.FullRIOFixMessage;
+import com.df.dv.consumer.model.FullRioMsgParse;
+import com.df.dv.consumer.storage.HiveDataIngestion;
+import com.df.dv.consumer.utils.Constants;
+import com.df.dv.consumer.utils.messageparsing.MessageParsingUtil;
+import com.get.rio.intf.internal.RIODistributionMsgImpl;
+import com.google.common.base.Optional;
+
+import scala.Tuple2;
+
+public class StreamProcessor implements Serializable {
+
+	private static final long serialVersionUID = -8132037095034929241L;
+	transient static Logger executorLogger = LogManager.getLogger("ExecutorLogger");
+	static Logger driverLogger = LogManager.getLogger("DriverLogger");
+
+	private static List<String> currentState = new ArrayList<String>();
+
+	public static JavaStreamingContext createStreamingContext(String checkpointDirectory,
+			Map<String, String> kafkaParams, Set<String> topics, String markerLocation, boolean enableAccumulator,
+			int duration) {
+
+		final int streamingDuration = duration;
+		JavaStreamingContext ssc = new JavaStreamingContext(StreamingConfig.getJavaSparkContext(),
+				Durations.seconds(streamingDuration));
+
+		final Accumulator<Double> inputCount = StreamingConfig.getJavaSparkContext().doubleAccumulator(0.0,
+				"inputCount");
+
+		final Accumulator<Double> outputCount = StreamingConfig.getJavaSparkContext().doubleAccumulator(0.0,
+				"outputCount");
+
+		// Initial state RDD input to mapWithState
+		// List<Tuple2<String, List<String>>> initialStateTuple =
+		// Arrays.asList(new Tuple2<>("", Arrays.asList("")));
+
+		// JavaPairRDD<String, List<String>> initialRDD =
+		// ssc.sparkContext().parallelizePairs(initialStateTuple);
+
+		try {
+			ApplicationConfig config = StreamingConfig.getApplicationConfig();
+
+			ssc.checkpoint(checkpointDirectory);
+
+			JavaPairInputDStream<String, String> directKafkaStream = KafkaUtils.createDirectStream(ssc, String.class,
+					String.class, kafka.serializer.StringDecoder.class, kafka.serializer.StringDecoder.class,
+					kafkaParams, topics);
+
+			if (enableAccumulator) {
+				directKafkaStream.foreachRDD(new VoidFunction<JavaPairRDD<String, String>>() {
+					private static final long serialVersionUID = 1876330876067658190L;
+
+					@Override
+					public void call(JavaPairRDD<String, String> messageRDD) throws Exception {
+						messageRDD.foreach(f -> inputCount.add(1.0));
+					}
+				});
+			}
+
+			// executor program
+			JavaDStream<FullRIOFixMessage> fullRIOFixMsgsDStreamList = directKafkaStream.map(message -> {
+				executorLogger.info("Generating FullRIOFixMessage inside Executor");
+				RIODistributionMsgImpl rio = (RIODistributionMsgImpl) MessageParsingUtil.utrtorio(message._2);
+				return FullRioMsgParse.extractRIOFixMsg(rio, config, message._2);
+			}).flatMap(f -> f);
+
+			JavaDStream<FullRIOFixMessage> invalidRIOFixMsgsDStream = fullRIOFixMsgsDStreamList
+					.filter(record -> !record.getRecordValidity());
+
+			JavaDStream<FullRIOFixMessage> validRIOFixMsgsDStream = fullRIOFixMsgsDStreamList
+					.filter(record -> record.getRecordValidity());
+
+			JavaPairDStream<String, FullRIOFixMessage> validPairRIOFixMsgsDStream = validRIOFixMsgsDStream
+					.mapToPair(f -> {
+						return new Tuple2<String, FullRIOFixMessage>(f.getUniqueKey(), f);
+					});
+
+			JavaMapWithStateDStream<String, FullRIOFixMessage, List<String>, Tuple2<String, FullRIOFixMessage>> stateDStream = validPairRIOFixMsgsDStream
+					.mapWithState(StateSpec.function(mappingFunc));// .timeout(Durations.minutes(1440)).initialState(initialRDD));
+
+			JavaDStream<FullRIOFixMessage> uniqueRIOFixMsgsDStream = stateDStream.filter(streamRecord -> streamRecord._1.equals(Constants.NEWRECORD)).map(f -> f._2);
+			JavaDStream<FullRIOFixMessage> duplicateRIOFixMsgsDStream = stateDStream.filter(streamRecord -> streamRecord._1.equals(Constants.DUPRECORD)).map(f -> f._2);
+
+			HiveDataIngestion.saveToHive(uniqueRIOFixMsgsDStream, duplicateRIOFixMsgsDStream, invalidRIOFixMsgsDStream,
+					outputCount, enableAccumulator);
+			if (enableAccumulator) {
+				directKafkaStream.foreachRDD(rdd -> {
+					driverLogger.info("For time: " + System.currentTimeMillis() + "\tinputCountAccumulator: "
+							+ inputCount.value() + "\toutputCountAccumulator: " + outputCount.value());
+				});
+			}
+
+		} catch (Exception e) {
+			StringWriter stack = new StringWriter();
+			e.printStackTrace(new PrintWriter(stack));
+			executorLogger.error("Error occured in StreamProcessor due to {}", stack);
+
+		}
+		return ssc;
+	}
+
+	private static Function3<String, Optional<FullRIOFixMessage>, State<List<String>>, Tuple2<String, FullRIOFixMessage>> mappingFunc = (
+			id, val, state) -> {
+
+		FullRIOFixMessage fullRioFixMsg = val.get();
+		if (state.exists()) {
+			if (state.isTimingOut()) {
+				executorLogger.info("State timing out: " + System.currentTimeMillis() + " for record with key: " + id);
+				// Its timed out, remove state and send it down the stream
+				state.remove();
+				currentState.add(id);
+				state.update(currentState);
+				return new Tuple2<>(Constants.NEWRECORD, fullRioFixMsg);
+			} else {
+				currentState = state.get();
+				if (!currentState.contains(id)) {
+					currentState.add(id);
+					state.update(currentState);
+					return new Tuple2<>(Constants.NEWRECORD, fullRioFixMsg);
+				} else {
+					return new Tuple2<>(Constants.DUPRECORD, fullRioFixMsg);
+				}
+			}
+		} else {
+			state.update(Arrays.asList(id));
+			return (new Tuple2<>(Constants.NEWRECORD, fullRioFixMsg));
+		}
+	};
+
+}
+
+
+
+package com.df.dv.consumer.storage;
+
+import java.io.PrintWriter;
+import java.io.StringWriter;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Map;
+
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+import org.apache.spark.Accumulator;
+import org.apache.spark.api.java.JavaRDD;
+import org.apache.spark.api.java.function.Function;
+import org.apache.spark.api.java.function.VoidFunction;
+import org.apache.spark.sql.DataFrame;
+import org.apache.spark.sql.Row;
+import org.apache.spark.sql.RowFactory;
+import org.apache.spark.sql.hive.HiveContext;
+import org.apache.spark.sql.types.StructType;
+
+import com.df.dv.consumer.model.FullRIOFixMessage;
+import com.df.dv.consumer.utils.validators.Validations;
+
+public class DataFrameGenerator {
+	// Creating DatFrame for insertion into hive
+	private static Logger executorLogger = LogManager.getLogger("ExecutorLogger");
+
+	public static DataFrame getDataFrameForHiveMaster(JavaRDD<FullRIOFixMessage> messageRDD, HiveContext hiveContext,
+			StructType schema, Map<String, Integer> tagNameToTagNumMap, String repeatingGrpTags,
+			Accumulator<Double> outputCountAccumulator, boolean enableAccumulator) {
+		// Following messageRDD foreach is just to add to accumulator
+		if (enableAccumulator) {
+			messageRDD.foreach(new VoidFunction<FullRIOFixMessage>() {
+				private static final long serialVersionUID = -1790406536698927698L;
+
+				@Override
+				public void call(FullRIOFixMessage record) throws Exception {
+					outputCountAccumulator.add(1.0);
+				}
+			});
+		}
+
+		JavaRDD<Row> rowRDD = messageRDD.map(new Function<FullRIOFixMessage, Row>() {
+
+			private static final long serialVersionUID = -1790406536698927668L;
+
+			@Override
+			public Row call(FullRIOFixMessage record) throws Exception {
+				Object o[] = new Object[] {};
+
+				try {
+					String[] hiveOrderedArray = schema.fieldNames();
+					Map<String, Method> getterMap = FullRIOFixMessage.getGetterMap();
+					List<Object> ls = new LinkedList<Object>();
+
+					for (String fName : hiveOrderedArray) {
+
+						// Removing products table column - to create null for
+						// respective columns
+						if (!(fName.equals("fii") || fName.equals("sedol") || fName.equals("description")
+								|| fName.equals("BBTM"))) {
+							Method getterMethod = getterMap.get(fName);
+							try {
+								Object value = null;
+
+								value = getValue(tagNameToTagNumMap, repeatingGrpTags, record, fName, getterMethod,
+										value);
+
+								ls.add(value);
+							} catch (Exception e) {
+								StringWriter stack = new StringWriter();
+								e.printStackTrace(new PrintWriter(stack));
+								executorLogger.error("Error occured getter invocation failed for {} due to {} ", fName,
+										stack);
+								ls.add(null);
+							}
+						} else {
+							Object value = null;
+							//value = getValue(tagNameToTagNumMap, repeatingGrpTags, record, fName, null, value);
+							ls.add(value);
+						}
+					}
+
+					o = ls.toArray(new Object[hiveOrderedArray.length - 4]);
+
+				} catch (Exception e) {
+					StringWriter stack = new StringWriter();
+					e.printStackTrace(new PrintWriter(stack));
+					executorLogger.error("Error occured while created dataframe {} due to ", stack);
+
+				}
+				return RowFactory.create(o);// this will return
+											// exception if datatype
+											// conversion fails. how to
+											// handle?
+			}
+
+			private Object getValue(Map<String, Integer> tagNameToTagNumMap, String repeatingGrpTags,
+					FullRIOFixMessage record, String fName, Method getterMethod, Object value)
+					throws IllegalAccessException, InvocationTargetException {
+				if (getterMethod == null && !tagNameToTagNumMap.isEmpty()) {
+					Integer tagNum = tagNameToTagNumMap.get(fName);
+					if (tagNum != null)
+						value = record.getFromTagMap(tagNameToTagNumMap.get(fName));
+				} else if (getterMethod != null) {
+					if (repeatingGrpTags.contains(fName)) {
+						value = getterMethod.invoke(record);
+						List s = (List) value;
+						value = Validations.validateObjectArrayAndSet.apply(s.toArray());
+					} else {
+						value = getterMethod.invoke(record);
+						if (value == null && !tagNameToTagNumMap.isEmpty()) {
+							Integer tagNum = tagNameToTagNumMap.get(fName);
+							if (tagNum != null)
+								value = record.getFromTagMap(tagNameToTagNumMap.get(fName));
+						}
+					}
+				}
+				return value;
+			}
+		});
+
+		DataFrame fullRioFixDataFrame = hiveContext.createDataFrame(rowRDD, schema);
+		return fullRioFixDataFrame;
+	}
+
+}
+
+
+package com.df.dv.consumer.storage;
+
+import java.io.PrintWriter;
+import java.io.StringWriter;
+import java.util.List;
+import java.util.Map;
+
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+import org.apache.spark.Accumulator;
+import org.apache.spark.api.java.JavaRDD;
+import org.apache.spark.api.java.function.VoidFunction;
+import org.apache.spark.sql.Column;
+import org.apache.spark.sql.DataFrame;
+import org.apache.spark.sql.hive.HiveContext;
+import org.apache.spark.sql.types.StructType;
+import org.apache.spark.storage.StorageLevel;
+import org.apache.spark.streaming.api.java.JavaDStream;
+
+import com.df.dv.consumer.conf.ApplicationConfig;
+import com.df.dv.consumer.conf.StreamingConfig;
+import com.df.dv.consumer.model.FullRIOFixMessage;
+import com.df.dv.consumer.model.HiveTableDef;
+import com.df.dv.consumer.utils.Constants;
+
+public class HiveDataIngestion {
+
+	/*Removing products join from code
+	private static String sqlQueryProducts = "select fii,sedol,description,BBTM from dataview.products";
+	private static HiveContext hiveContextForProducts = new HiveContext(StreamingConfig.getJavaSparkContext());
+	private static DataFrame productsDataFrame = hiveContextForProducts.sql(sqlQueryProducts);*/
+	private static Logger executorLogger = LogManager.getLogger("ExecutorLogger");
+
+	public static void saveToHive(JavaDStream<FullRIOFixMessage> uniqueRIOFixMsgsDStream,
+			JavaDStream<FullRIOFixMessage> duplicateRIOFixMsgsDStream,
+			JavaDStream<FullRIOFixMessage> invalidRIOFixMsgsDStream, Accumulator<Double> outputAccumulator, boolean enableAccumulator) throws Exception {
+
+		ApplicationConfig appConfig = StreamingConfig.getApplicationConfig();
+		List<HiveTableDef> tableDefs = appConfig.getHiveTableDefs();
+
+		uniqueRIOFixMsgsDStream.foreachRDD(new VoidFunction<JavaRDD<FullRIOFixMessage>>() {
+
+			private static final long serialVersionUID = 1876330876067658188L;
+
+			@Override
+			public void call(JavaRDD<FullRIOFixMessage> messageRDD) throws Exception {
+
+				messageRDD.persist(StorageLevel.MEMORY_ONLY_2());
+
+				if (messageRDD.take(1).size() > 0) {
+					HiveTableDef hiveMaster = appConfig.getHiveMasterTableDef();
+					save(messageRDD, appConfig, hiveMaster, outputAccumulator, enableAccumulator, "fullRioFixDataFrame");
+				}
+			}
+		});
+
+		duplicateRIOFixMsgsDStream.foreachRDD(new VoidFunction<JavaRDD<FullRIOFixMessage>>() {
+
+			private static final long serialVersionUID = 1876330876067658189L;
+
+			@Override
+			public void call(JavaRDD<FullRIOFixMessage> dupMessageRDD) throws Exception {
+
+				for (HiveTableDef tableDef : tableDefs) {
+					String tableName = tableDef.getHiveTableName();
+					if (tableName.contains(Constants.DUPRECORD)) {
+						// ########## DeDup hive table ########## //
+						if (dupMessageRDD.take(1).size() > 0) {
+							save(dupMessageRDD, appConfig, tableDef, outputAccumulator, enableAccumulator, "fullFixRioDeDupTempTable");
+						}
+					}
+				}
+			}
+		});
+
+		invalidRIOFixMsgsDStream.foreachRDD(new VoidFunction<JavaRDD<FullRIOFixMessage>>() {
+
+			private static final long serialVersionUID = 1876330876067658190L;
+
+			@Override
+			public void call(JavaRDD<FullRIOFixMessage> invalidMessageRDD) throws Exception {
+
+				for (HiveTableDef tableDef : tableDefs) {
+					String tableName = tableDef.getHiveTableName();
+					if (tableName.contains(Constants.FAILEDVALUE)) {
+						// ########## invalid hive table ########## //
+						if (invalidMessageRDD.take(1).size() > 0) {
+							save(invalidMessageRDD, appConfig, tableDef, outputAccumulator, enableAccumulator, "fullFixRioFailedTempTable");
+						}
+					}
+				}
+			}
+		});	
+	}
+
+	private static void save(JavaRDD<FullRIOFixMessage> messageRDD, ApplicationConfig appConfig, HiveTableDef tableDef, Accumulator<Double> outputCountAccumulator, boolean enableAccumulator,
+			String dataframeType) {
+
+		
+		HiveContext hiveContext = StreamingConfig.getHiveContext(messageRDD.context());
+		String allColumns = tableDef.getColumnNames();
+
+		StructType schema = tableDef.getHiveSchemaStruct();
+		Map<String, Integer> tagNameToTagNumMap = tableDef.getTagNameToTagNumMap();
+		String repeatingGrpTags = tableDef.getRepeatingGroupTags();
+
+		DataFrame fullRioFixDataFrame = DataFrameGenerator.getDataFrameForHiveMaster(messageRDD, hiveContext, schema,
+				tagNameToTagNumMap, repeatingGrpTags, outputCountAccumulator, enableAccumulator);
+
+		/* Removing join from Products
+		 * if (dataframeType.equals("fullRioFixDataFrame")) {
+			DataFrame joinedDataFrame = fullRioFixDataFrame.join(productsDataFrame,
+					new Column("securityaltid").equalTo(new Column("fii")), "left_outer");
+			joinedDataFrame.registerTempTable(dataframeType);
+		} else*/
+		
+			fullRioFixDataFrame.registerTempTable(dataframeType);
+
+		try {
+			hiveContext.sql("INSERT INTO TABLE " + tableDef.getHiveTableName() + " PARTITION (tradeDate) SELECT "
+					+ allColumns + " FROM " + dataframeType);
+
+		} catch (Exception e) {
+			
+			StringWriter stack = new StringWriter();
+			e.printStackTrace(new PrintWriter(stack));
+			executorLogger.error("Error occured insert failed into hive table {} due to {} ", tableDef.getHiveTableName(),
+					stack);						
+		}
+	}
+
+}
+
+
