@@ -1,0 +1,22 @@
+package com.mycompany.app;
+
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.net.URL;
+
+public class App1 {
+
+    public static void main(String[] args) {
+        try {
+            URL url = new URL("https://data.gov.au/geoserver/act-suburb-locality-boundaries-psma-administrative-boundaries/wfs?request=GetFeature&typeName=ckan_0257a9da_b558_4d86_a987_535c775cf8d8&outputFormat=json");
+
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(url.openStream(), "UTF-8"))) {
+                for (String line; (line = reader.readLine()) != null; ) {
+                    System.out.println(line);
+                }
+            }
+        } catch(Exception e) {
+            System.out.println(e);
+        }
+    }
+}
