@@ -1,0 +1,96 @@
+package com.mycompany.app;
+
+
+import eu.trentorise.opendata.jackan.CkanClient;
+import eu.trentorise.opendata.jackan.dcat.DcatFactory;
+import eu.trentorise.opendata.jackan.model.CkanDataset;
+import eu.trentorise.opendata.jackan.model.CkanResource;
+
+import java.io.FileWriter;
+import java.io.Writer;
+import java.util.List;
+
+/**
+ * Created by Ashish Nagdev on 08/17/2018
+ *
+ */
+public class App 
+{
+    public static void main( String[] args )
+    {
+        System.out.println( "Hello World!" );
+
+        CkanClient cc = new CkanClient("https://data.gov.au/");
+       // CkanClient cc = new CkanClient("https://data.gov.au/geoserver/act-suburb-locality-boundaries-psma-administrative-boundaries/wfs?request=GetFeature&typeName=ckan_0257a9da_b558_4d86_a987_535c775cf8d8&outputFormat=json");
+
+        CkanDataset d = cc.getDataset("ACT Suburb/Locality Boundaries - PSMA Administrative Boundaries GeoJSON");
+        System.out.println(d.getResources());
+        //DcatFactory dcatFactory = new DcatFactory();
+
+        //dcatFactory.makeDistribution()
+
+        /*try {
+            Writer fileWriter = new FileWriter("/home/ashish/filewriter.txt");
+            //CkanClient cc = new CkanClient("http://nationalmap.gov.au");
+            //System.out.println(cc.getDatasetList());
+           // List<String> datasetList = cc.getDatasetList();
+
+
+            //fileWriter.write("DATALIST: " + cc.getDatasetList());
+
+            List<String> ds = cc.getDatasetList();//(100000000, 0);
+
+
+
+            for (String s : ds) {
+                System.out.println();
+                // System.out.println("DATASET: " + s);
+
+
+                    CkanDataset d = cc.getDataset(s);
+
+                    System.out.println(d.getExtrasAsHashMap());
+//            System.out.println("Organization: " + d.getOrganization());
+//            System.out.println("LICENSE: " +d.getLicenseTitle());
+//            System.out.println("ID: " +d.getId());
+//            System.out.println("AUTHOR: " +d.getAuthor());
+
+                
+
+                    System.out.println("  RESOURCES:");
+                    fileWriter.write("\n");
+                    fileWriter.write("RESOURCES: ");
+
+                    for (CkanResource r : d.getResources()) {
+
+
+                        String name = r.getName();
+
+
+                        //if(name.equals("ACT Suburb/Locality Boundaries - PSMA Administrative Boundaries - Preview this Dataset (WMS)
+
+                        fileWriter.write("\n");
+                        fileWriter.write("NAME: " + name);
+                        System.out.println(r.getOthers());
+
+
+
+
+                        fileWriter.write("\n");
+                        fileWriter.write("FORMAT: " + r.getFormat());
+
+
+                        fileWriter.write("\n");
+                        fileWriter.write("URL: " + r.getUrl());
+
+//                    System.out.println("    " + r.getName());
+//                    System.out.println("    FORMAT: " + r.getFormat());
+//                    System.out.println("       URL: " + r.getUrl());
+                    }
+                }
+
+        } catch(Exception e) { System.out.println(e);}*/
+
+        //fileWriter.close();
+    }
+}
