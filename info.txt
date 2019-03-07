@@ -1,0 +1,415 @@
+------------------------------------------------------------------------------------
+this is what i tried in scala
+---------------------------------------------------------------------
+import org.apache.spark.sql.Row
+import org.apache.spark.sql.functions.explode
+import org.apache.spark.sql.functions._
+
+def flattenSchema(schema: StructType, prefix: String = null) : Array[Column] = {
+  schema.fields.flatMap(f => {
+    val colName = if (prefix == null) f.name else (prefix + "." + f.name)
+                                                   
+    f.dataType match {
+      case st: StructType => flattenSchema(st, colName)
+      //case st1: ArrayType => st1.flatMap{ case (x, i) => flattenSchema(x, colName)}
+      case _ => Array(col(colName))
+    }
+  })
+}
+
+val data_df12 = spark.read.option("multiLine", true).json("/mnt/RAW_DATA/PYMT/customers/2019/2/10/0f5c646e-973e-4f78-8613-5c47e03ffc94_Stripe_customers.json")
+val data_df13 = data_df12.withColumn("sources", explode($"sources.data.*"))
+val data_df14 = data_df13.select(flattenSchema(data_df1.schema):_*).show(truncate=false)
+
+--------------------------------------------------------------------------------------------------------------------------
+we need to make this below code more generic to find whether it is csv or json or parquet(u can use os.listdir or something like that
+------------------------------------------------------------------------------------------------------------------------------
+import time
+from datetime import datetime, timedelta
+from dateutil import parser
+from dateutil.relativedelta import relativedelta
+from pyspark.sql import functions as func
+from pyspark.sql import *
+from pyspark.sql import types as typ
+from pyspark.sql.types import *
+from pyspark.sql.functions import *
+from pytz import timezone
+from py4j.protocol import Py4JJavaError
+import os 
+
+def table_name(name2):
+  return 'digital.pymt_stripe_' +name2
+#table_name='digital.pymt_stripe_charges'
+
+def current_date(date_type, no_of_days=0):
+  try:
+    if date_type.lower() == 'years':
+      return (datetime.today() + relativedelta(years = no_of_days)).strftime("%Y")
+    elif date_type.lower()== 'months':
+      return (datetime.today() + relativedelta(months = no_of_days)).strftime("%m")
+    elif date_type.lower()== 'days':
+      return (datetime.today() + relativedelta(days = no_of_days)).strftime("%d")
+    elif date_type.lower() =='fulldate':
+      return (datetime.today() + timedelta(no_of_days)).strftime("%Y-%m-%d")
+    elif date_type.lower() =='datetime':
+      return (datetime.today() + timedelta(no_of_days)).strftime("%Y-%m-%d %H:%M:%S")
+    else:
+      return "Valid values are only: 'days' or 'months' or 'years' or 'fulldate' or 'datetime'"
+  except Exception as e:
+    print ("Valid values for 1st argument are: 'days' or 'months' or 'years' or 'fulldate' or 'datetime'")
+
+def stripe_base_path(name1):
+    return '/mnt/RAW_DATA/PYMT/' + name1 
+
+log_file="#"*50 + '\n{currtime} :::::::::: {table_name} job started\n\r'.format(currtime=current_date('datetime'), table_name=table_name)+ "<br>"
+  
+def stripe_partition_path(years_value=current_date('fulldate',-1)[0:4],months_value=current_date('fulldate',-1)[6:7],days_value=current_date('fulldate',-1)[8:10]):
+  global log_file
+  if months_value=='*' or days_value=='*':
+    return stripe_base_path() + '/' + str(years_value) + '/' + '*' + '/' +  '*'
+  else:
+    try:
+      datetime.strptime('{years_value}-{months_value}-{days_value}'.format(years_value=years_value,months_value=months_value, days_value=days_value), '%Y-%m-%d')
+      return stripe_base_path() + '/' + str(years_value) + '/' + str(months_value) + '/' +  str(days_value)
+    except Exception as e:
+      log_file += " \n{currtime} :::::::::: Error below: \n {e}".format(e=e, currtime=current_date('datetime'))    
+      print (e)
+
+stripe_path_output=stripe_partition_path(2018,12,24)
+
+    
+def create_base_df(name):
+  stripe_base_path(name)
+  table_name(name)
+  global log_file
+  global table_name
+  try:
+    input_df = spark.read.json('{path_var}'.format(path_var=stripe_path_output),multiLine=True).distinct()
+    if input_df.rdd.isEmpty():
+      log_file += '\n{currtime} :::::::::: Schema is empty, please try again with a proper file \n'.format(currtime=current_date('datetime'))+ "<br>"
+    else:
+      input_df=input_df.withColumn("year", func.date_format(input_df.created.cast(dataType=typ.TimestampType()),"Y")).\
+      withColumn("month", func.date_format(input_df.created.cast(dataType=typ.TimestampType()),"MM")).\
+      withColumn("day_date", func.date_format(input_df.created.cast(dataType=typ.TimestampType()),"yyyy-MM-dd")).\
+      withColumn("createdate",lit(current_timestamp()))
+      #input_df.createOrReplaceTempView("stripe_tempTable")
+      return input_df
+    log_file += "\n{currtime} :::::::::: Schema loaded from the following path: {path_var}\n".format(currtime=current_date('datetime'),path_var=stripe_path_output)+ "<br>"
+  except (Py4JJavaError, BaseException) as e:
+    log_file += " \n{currtime} :::::::::: Error below: \n {e}".format(e=e, currtime=current_date('datetime'))+ "<br>"
+    raise
+
+
+def input_df_insert(table_name):
+  return input_df.write.format("delta").mode("append").saveAsTable("{table_name}".format(table_name=table_name),overwrite = False)
+
+def get_schema_diff(input_df):
+  global log_file
+  global table_name
+  try:
+    log_file += "\n {table_name} load process started at {currtime} \n \n".format(table_name=table_name, currtime=current_date('datetime'))+ "<br>"
+    table_schema=spark.table("{table_name}".format(table_name=table_name)).columns
+    input_df_schema=input_df.columns
+    if len(set(table_schema))==len(set(input_df_schema)):
+      log_file += "\n{currtime} :::::::::: no change in schema \n Writing new data into target....\n ".format(currtime=current_date('datetime'))+ "<br>"
+      input_df.select([col(c).cast("string") for c in input_df.columns]).write.format("delta").mode("append").saveAsTable("{table_name}".format(table_name=table_name),overwrite = False)
+    elif len(set(input_df_schema)-set(table_schema))>0 and len(set(table_schema)-set(input_df_schema))>0:
+      log_file += "\n{currtime} :::::::::: Input df has had one of the old columns removed and has more columns added \n".format(currtime=current_date('datetime'))+ "<br>"
+      schema_diff_out=[]
+      schema_diff_out.extend(list(set(input_df_schema)-set(table_schema)))
+      new_schema_cols=str(' STRING, '.join(x for x in schema_diff_out) + " STRING")
+      print(new_schema_cols)
+      log_file += """\n{currtime} :::::::::: ALTER QUERY::::::::: '\n' ALTER TABLE {table_name} ADD COLUMNS ({cols});\n :::::""".format(currtime=current_date('datetime'),table_name=table_name,cols=new_schema_cols)+ "<br>"
+      log_file += "\n{currtime} :::::::::: Running ALTER statement:\n {new_schema_cols}".format(new_schema_cols=new_schema_cols, currtime=current_date('datetime'))+ "<br>"
+      spark.sql("""ALTER TABLE {table_name} ADD COLUMNS ({cols})""".format(table_name=table_name,cols=new_schema_cols))
+      input_df.select([col(c).cast("string") for c in input_df.columns]).write.format("delta").mode("append").saveAsTable("{table_name}".format(table_name=table_name),overwrite = False)
+    elif len(set(table_schema)-set(input_df_schema))>0:
+      table_diff=[]
+      input_df_cols=[]
+      table_diff.extend(list(set(table_schema)-set(input_df_schema)))
+      input_df_cols.extend(input_df_schema)
+      for cols in table_diff:
+        input_df=input_df.withColumn(cols,lit(None))
+      log_file += "\n{currtime} :::::::::: Existing table has more columns \n".format(currtime=current_date('datetime'))+ "<br>"
+      log_file += "\n{currtime} :::::::::: list of columns that are extra in the table: {table_diff}\n".format(table_diff=table_diff, currtime=current_date('datetime'))+ "<br>"
+      log_file += "\n{currtime} :::::::::: list of columns in the input_df: {input_df}\n".format(input_df=input_df.columns,currtime=current_date('datetime'))+ "<br>"
+      log_file += "\n{currtime} :::::::::: Running insert job with modified DF.... {input_df}\n".format(input_df=input_df.columns,currtime=current_date('datetime') )+ "<br>"
+      input_df.select([col(c).cast("string") for c in input_df.columns]).write.format("delta").mode("append").saveAsTable("{table_name}".format(table_name=table_name),overwrite = False)
+      #log_file += "\n :::::::::{currtime}::::::::::\n Here is the insert script --> \n INSERT INTO {table_name} ({input_df_cols}, {table_diff}) SELECT {input_df_cols}, {table_diff} FROM stripe_tempTable\n ".format(table_name=table_name, input_df_cols=str(input_df_cols).replace("'","").replace("[","").replace("]",""),currtime=current_date('datetime'), table_diff=str(table_diff).replace("'","").replace("[","").replace("]",""))
+      #spark.sql("""INSERT INTO {table_name} ({input_df_cols})  SELECT {input_df_cols} FROM stripe_tempTable""".format(table_name=table_name, input_df_cols=str(input_df_cols).replace("'","").replace("[","").replace("]","")))
+    elif len(set(input_df_schema)-set(table_schema))>0:
+      log_file += "\n{currtime} :::::::::: input df has more columns \n".format(currtime=current_date('datetime'))+ "<br>"
+      schema_diff_out=[]
+      schema_diff_out.extend(list(set(input_df_schema)-set(table_schema)))
+      new_schema_cols=str(' STRING, '.join(x for x in schema_diff_out) + " STRING")
+      print(new_schema_cols)
+      log_file += """\n{currtime} :::::::::: ALTER QUERY::::::::: '\n' ALTER TABLE {table_name} ADD COLUMNS ({cols});\n :::::""".format(currtime=current_date('datetime'),table_name=table_name,cols=new_schema_cols)+ "<br>"
+      log_file += "\n{currtime} :::::::::: Running ALTER statement:\n {new_schema_cols}".format(new_schema_cols=new_schema_cols, currtime=current_date('datetime'))+ "<br>"
+      spark.sql("""ALTER TABLE {table_name} ADD COLUMNS ({cols})""".format(table_name=table_name,cols=new_schema_cols))
+      #spark.sql("""INSERT INTO {table_name} ({table_schema})  SELECT {table_schema} FROM stripe_tempTable""".format(table_name=table_name, input_df_cols=str(input_df_cols).replace("'","").replace("[","").replace("]","")))
+      input_df.select([col(c).cast("string") for c in input_df.columns]).write.format("delta").mode("append").saveAsTable("{table_name}".format(table_name=table_name),overwrite = False)
+  except Exception as e:
+    log_file += "\n{currtime} ::::::::::  {table_name} load failed with {e}\n".format(table_name=table_name, e=e, currtime=current_date('datetime'))
+    raise
+
+
+try:
+  get_schema_diff(create_base_df(customer))
+  log_file += "\n{currtime} :::::::::: Load succesful".format(currtime=current_date('datetime'))
+  dbutils.notebook.run('/UTILITIES/SEND_MAIL_VIA_SENDGRID',100,{'sender_email' : '','receiver' : '','sender_name' : '','subject' : '{table_name} load completed succesfully'.format(table_name=table_name), 'body' : '{log_file}'.format(log_file=log_file),'content_type' : 'text/html'})
+except Exception as e:
+  log_file += "\n{currtime} :::::::::: Load failed due to the following error: {e}".format(e=e,currtime=current_date('datetime'))
+  dbutils.notebook.run('/UTILITIES/SEND_MAIL_VIA_SENDGRID',100,{'sender_email' : '','receiver' : '','sender_name' : '','subject' : '{table_name} load failed! Please check the error'.format(table_name=table_name), 'body' : '{log_file}'.format(log_file=log_file) ,'content_type' : 'text/html'})
+  -----------------------------------------------------------------------
+  sample json records - we will have a path with lot of files with below json records
+------------------------------------------------------------------------
+  [
+    {
+        "account_balance": 0,
+        "created": 1550091805,
+        "currency": null,
+        "default_source": "card_1E3Ut6JAWJAHRwsMlelZ8b1M",
+        "delinquent": false,
+        "description": "Rosalva Sanchez ",
+        "discount": null,
+        "email": null,
+        "id": "cus_EWXzXF9NrO57YO",
+        "invoice_prefix": "E29D89A",
+        "invoice_settings": {
+            "custom_fields": null,
+            "footer": null
+        },
+        "livemode": true,
+        "metadata": {},
+        "object": "customer",
+        "shipping": null,
+        "sources": {
+            "data": [
+                {
+                    "address_city": null,
+                    "address_country": null,
+                    "address_line1": null,
+                    "address_line1_check": null,
+                    "address_line2": null,
+                    "address_state": null,
+                    "address_zip": "89032",
+                    "address_zip_check": "pass",
+                    "brand": "Visa",
+                    "country": "US",
+                    "customer": "cus_EWXzXF9NrO57YO",
+                    "cvc_check": "pass",
+                    "dynamic_last4": null,
+                    "exp_month": 1,
+                    "exp_year": 2023,
+                    "fingerprint": "gbqYSTOL0Gky5hhJ",
+                    "funding": "debit",
+                    "id": "card_1E3Ut6JAWJAHRwsMlelZ8b1M",
+                    "last4": "0845",
+                    "metadata": {},
+                    "name": "Rosalva Sanchez ",
+                    "object": "card",
+                    "tokenization_method": null
+                }
+            ],
+            "has_more": false,
+            "object": "list",
+            "total_count": 1,
+            "url": "/v1/customers/cus_EWXzXF9NrO57YO/sources"
+        },
+        "subscriptions": {
+            "data": [],
+            "has_more": false,
+            "object": "list",
+            "total_count": 0,
+            "url": "/v1/customers/cus_EWXzXF9NrO57YO/subscriptions"
+        },
+        "tax_info": null,
+        "tax_info_verification": null
+    },
+    {
+        "account_balance": 0,
+        "created": 1550091766,
+        "currency": null,
+        "default_source": "card_1E3UsTJAWJAHRwsMqtezGvlV",
+        "delinquent": false,
+        "description": "Khaled J Haddad",
+        "discount": null,
+        "email": null,
+        "id": "cus_EWXyZ6gpNHQ9xP",
+        "invoice_prefix": "3658567",
+        "invoice_settings": {
+            "custom_fields": null,
+            "footer": null
+        },
+        "livemode": true,
+        "metadata": {},
+        "object": "customer",
+        "shipping": null,
+        "sources": {
+            "data": [
+                {
+                    "address_city": null,
+                    "address_country": null,
+                    "address_line1": null,
+                    "address_line1_check": null,
+                    "address_line2": null,
+                    "address_state": null,
+                    "address_zip": "92626",
+                    "address_zip_check": "pass",
+                    "brand": "Visa",
+                    "country": "US",
+                    "customer": "cus_EWXyZ6gpNHQ9xP",
+                    "cvc_check": "pass",
+                    "dynamic_last4": null,
+                    "exp_month": 9,
+                    "exp_year": 2022,
+                    "fingerprint": "7q5t91U1XvCNy0sg",
+                    "funding": "debit",
+                    "id": "card_1E3UsTJAWJAHRwsMqtezGvlV",
+                    "last4": "6014",
+                    "metadata": {},
+                    "name": "Khaled J Haddad",
+                    "object": "card",
+                    "tokenization_method": null
+                }
+            ],
+            "has_more": false,
+            "object": "list",
+            "total_count": 1,
+            "url": "/v1/customers/cus_EWXyZ6gpNHQ9xP/sources"
+        },
+        "subscriptions": {
+            "data": [],
+            "has_more": false,
+            "object": "list",
+            "total_count": 0,
+            "url": "/v1/customers/cus_EWXyZ6gpNHQ9xP/subscriptions"
+        },
+        "tax_info": null,
+        "tax_info_verification": null
+    },
+    {
+        "account_balance": 0,
+        "created": 1550091743,
+        "currency": null,
+        "default_source": "card_1E3Us7JAWJAHRwsMvqiD2Kse",
+        "delinquent": false,
+        "description": "Christopher S Elliott",
+        "discount": null,
+        "email": null,
+        "id": "cus_EWXyVstnMIAeIQ",
+        "invoice_prefix": "0005DE7",
+        "invoice_settings": {
+            "custom_fields": null,
+            "footer": null
+        },
+        "livemode": true,
+        "metadata": {},
+        "object": "customer",
+        "shipping": null,
+        "sources": {
+            "data": [
+                {
+                    "address_city": null,
+                    "address_country": null,
+                    "address_line1": null,
+                    "address_line1_check": null,
+                    "address_line2": null,
+                    "address_state": null,
+                    "address_zip": "85016",
+                    "address_zip_check": "pass",
+                    "brand": "Visa",
+                    "country": "US",
+                    "customer": "cus_EWXyVstnMIAeIQ",
+                    "cvc_check": "pass",
+                    "dynamic_last4": null,
+                    "exp_month": 11,
+                    "exp_year": 2022,
+                    "fingerprint": "X9f5717F5hjiB3au",
+                    "funding": "debit",
+                    "id": "card_1E3Us7JAWJAHRwsMvqiD2Kse",
+                    "last4": "6746",
+                    "metadata": {},
+                    "name": "Christopher S Elliott",
+                    "object": "card",
+                    "tokenization_method": null
+                }
+            ],
+            "has_more": false,
+            "object": "list",
+            "total_count": 1,
+            "url": "/v1/customers/cus_EWXyVstnMIAeIQ/sources"
+        },
+        "subscriptions": {
+            "data": [],
+            "has_more": false,
+            "object": "list",
+            "total_count": 0,
+            "url": "/v1/customers/cus_EWXyVstnMIAeIQ/subscriptions"
+        },
+        "tax_info": null,
+        "tax_info_verification": null
+    },
+    {
+        "account_balance": 0,
+        "created": 1550091487,
+        "currency": null,
+        "default_source": "card_1E3UnzJAWJAHRwsMR3puMcgb",
+        "delinquent": false,
+        "description": "Sarah Hendricks",
+        "discount": null,
+        "email": null,
+        "id": "cus_EWXtLUFvUWRWqf",
+        "invoice_prefix": "EFDDBE1",
+        "invoice_settings": {
+            "custom_fields": null,
+            "footer": null
+        },
+        "livemode": true,
+        "metadata": {},
+        "object": "customer",
+        "shipping": null,
+        "sources": {
+            "data": [
+                {
+                    "address_city": null,
+                    "address_country": null,
+                    "address_line1": null,
+                    "address_line1_check": null,
+                    "address_line2": null,
+                    "address_state": null,
+                    "address_zip": "89115",
+                    "address_zip_check": "pass",
+                    "brand": "Visa",
+                    "country": "US",
+                    "customer": "cus_EWXtLUFvUWRWqf",
+                    "cvc_check": "pass",
+                    "dynamic_last4": null,
+                    "exp_month": 9,
+                    "exp_year": 2022,
+                    "fingerprint": "wPfwlImehRwECXHD",
+                    "funding": "debit",
+                    "id": "card_1E3UnzJAWJAHRwsMR3puMcgb",
+                    "last4": "0082",
+                    "metadata": {},
+                    "name": "Sarah Hendricks",
+                    "object": "card",
+                    "tokenization_method": null
+                }
+            ],
+            "has_more": false,
+            "object": "list",
+            "total_count": 1,
+            "url": "/v1/customers/cus_EWXtLUFvUWRWqf/sources"
+        },
+        "subscriptions": {
+            "data": [],
+            "has_more": false,
+            "object": "list",
+            "total_count": 0,
+            "url": "/v1/customers/cus_EWXtLUFvUWRWqf/subscriptions"
+        },
+        "tax_info": null,
+        "tax_info_verification": null
+    }
+]
