@@ -1,0 +1,275 @@
+import time
+from datetime import datetime, timedelta
+from dateutil import parser
+from dateutil.relativedelta import relativedelta
+from pyspark.sql import functions as func
+from pyspark.sql import *
+from pyspark.sql import types as typ
+from pyspark.sql.types import *
+from pyspark.sql.functions import *
+from pytz import timezone
+from py4j.protocol import Py4JJavaError
+import os 
+
+table_name='digital.pymt_stripe_charges'
+
+def current_date(date_type, no_of_days=0):
+  try:
+    if date_type.lower() == 'years':
+      return (datetime.today() + relativedelta(years = no_of_days)).strftime("%Y")
+    elif date_type.lower()== 'months':
+      return (datetime.today() + relativedelta(months = no_of_days)).strftime("%m")
+    elif date_type.lower()== 'days':
+      return (datetime.today() + relativedelta(days = no_of_days)).strftime("%d")
+    elif date_type.lower() =='fulldate':
+      return (datetime.today() + timedelta(no_of_days)).strftime("%Y-%m-%d")
+    elif date_type.lower() =='datetime':
+      return (datetime.today() + timedelta(no_of_days)).strftime("%Y-%m-%d %H:%M:%S")
+    else:
+      return "Valid values are only: 'days' or 'months' or 'years' or 'fulldate' or 'datetime'"
+  except Exception as e:
+    print ("Valid values for 1st argument are: 'days' or 'months' or 'years' or 'fulldate' or 'datetime'")
+
+# def stripe_base_path():
+#     return '/mnt/RAW_DATA/PYMT/charges'
+
+log_file="#"*50 + '\n{currtime} :::::::::: {table_name} job started\n\r'.format(currtime=current_date('datetime'), table_name=table_name)
+  
+#def stripe_partition_path(years_value=current_date('fulldate',-1)[0:4],months_value=current_date('fulldate',-1)[6:7],days_value=current_date('fulldate',-1)[8:10]):
+def stripe_partition_path(stripe_base_path):
+  global log_file
+  years_value = date.today().year
+  months_value = date.today().month
+  days_value = date.today().day
+  if months_value=='*' or days_value=='*':
+    return stripe_base_path + '/' + str(years_value) + '/' + '*' + '/' +  '*'
+  else:
+    try:
+      datetime.strptime('{years_value}-{months_value}-{days_value}'.format(years_value=years_value,months_value=months_value, days_value=days_value), '%Y-%m-%d')
+      return stripe_base_path + '/' + str(years_value) + '/' + str(months_value) + '/' +  str(days_value)
+    except Exception as e:
+      log_file += " \n{currtime} :::::::::: Error below: \n {e}".format(e=e, currtime=current_date('datetime'))    
+      print (e)
+
+#stripe_path_output=stripe_partition_path(2018,12,24)
+print(stripe_path_output)
+
+def flattenSchema(schema, prefix=None):
+    fields = []
+    for field in schema.fields:
+        name = prefix + '.' + field.name if prefix else field.name
+        dtype = field.dataType
+        if isinstance(dtype, ArrayType):
+            dtype = dtype.elementType
+        if isinstance(dtype, StructType):
+            fields += flattenSchema(dtype, prefix=name)
+        else:
+            fields.append(name)
+    return fields
+    
+def create_base_df(file_type):
+  global log_file
+  global table_name
+  try:
+    if file_type == 'json':
+      print("test1")
+      input_df = spark.read.json('{path_var}'.format(path_var=stripe_path_output),multiLine=True).distinct()
+      print("test3")
+      #input_df.show(1)
+      if input_df.rdd.isEmpty():
+        log_file += '\n{currtime} :::::::::: Schema is empty, please try again with a proper file \n'.format(currtime=current_date('datetime'))
+      else:
+        print("test4")
+        input_df = input_df.select(flattenSchema(input_df.schema))
+        print("test5")
+        input_df.show(1)
+        input_df = input_df.withColumn("year", func.date_format(input_df.created.cast(dataType=typ.TimestampType()),"Y")).\
+        withColumn("month", func.date_format(input_df.created.cast(dataType=typ.TimestampType()),"MM")).\
+        withColumn("day_date", func.date_format(input_df.created.cast(dataType=typ.TimestampType()),"yyyy-MM-dd")).\
+        withColumn("createdate",lit(current_timestamp()))
+        print("test6")
+        input_df.show(1)
+        return input_df
+        log_file += "\n{currtime} :::::::::: Schema loaded from the following path: {path_var}\n".format(currtime=current_date('datetime'),path_var=stripe_path_output)
+    elif file_type == 'csv':
+      input_df = spark.read.option('header', True).option("delimiter",",").option("inferSchema","true").csv('{path_var}'.format(path_var=stripe_path_output))
+      if input_df.rdd.isEmpty():
+        log_file += '\n{currtime} :::::::::: Schema is empty, please try again with a proper file \n'.format(currtime=current_date('datetime'))
+      else:
+        input_df = input_df.withColumn("year", func.date_format(input_df.created.cast(dataType=typ.TimestampType()),"Y")).\
+        withColumn("month", func.date_format(input_df.created.cast(dataType=typ.TimestampType()),"MM")).\
+        withColumn("day_date", func.date_format(input_df.created.cast(dataType=typ.TimestampType()),"yyyy-MM-dd")).\
+        withColumn("createdate",lit(current_timestamp()))
+        return input_df
+        log_file += "\n{currtime} :::::::::: Schema loaded from the following path: {path_var}\n".format(currtime=current_date('datetime'),path_var=stripe_path_output)
+    elif file_type == 'parquet':
+      input_df = spark.read.option('header', True).option("inferSchema", True).parquet('{path_var}'.format(path_var=stripe_path_output))
+      if input_df.rdd.isEmpty():
+        log_file += '\n{currtime} :::::::::: Schema is empty, please try again with a proper file \n'.format(currtime=current_date('datetime'))
+      else:
+        input_df = input_df.withColumn("year", func.date_format(input_df.created.cast(dataType=typ.TimestampType()),"Y")).\
+        withColumn("month", func.date_format(input_df.created.cast(dataType=typ.TimestampType()),"MM")).\
+        withColumn("day_date", func.date_format(input_df.created.cast(dataType=typ.TimestampType()),"yyyy-MM-dd")).\
+        withColumn("createdate",lit(current_timestamp()))
+        return input_df
+        log_file += "\n{currtime} :::::::::: Schema loaded from the following path: {path_var}\n".format(currtime=current_date('datetime'),path_var=stripe_path_output)
+  except (Py4JJavaError, BaseException) as e:
+    log_file += " \n{currtime} :::::::::: Error below: \n {e}".format(e=e, currtime=current_date('datetime'))
+    raise
+
+
+# def input_df_insert(table_name):
+#   return input_df.write.format("delta").mode("append").saveAsTable("{table_name}".format(table_name=table_name),overwrite = False)
+
+def get_schema_diff(input_df):
+  global log_file
+  global table_name
+  try:
+    print("test2")
+    log_file += "\n {table_name} load process started at {currtime} \n \n".format(table_name=table_name, currtime=current_date('datetime'))
+    table_schema=spark.table("{table_name}".format(table_name=table_name)).columns
+    input_df_schema=input_df.columns
+    if len(set(table_schema))==len(set(input_df_schema)):
+      log_file += "\n{currtime} :::::::::: no change in schema \n Writing new data into target....\n ".format(currtime=current_date('datetime'))
+      #input_df.select([col(c).cast("string") for c in input_df.columns]).write.format("delta").mode("append").saveAsTable("{table_name}".format(table_name=table_name),overwrite = False)
+    elif len(set(input_df_schema)-set(table_schema))>0 and len(set(table_schema)-set(input_df_schema))>0:
+      log_file += "\n{currtime} :::::::::: Input df has had one of the old columns removed and has more columns added \n".format(currtime=current_date('datetime'))
+      schema_diff_out=[]
+      schema_diff_out.extend(list(set(input_df_schema)-set(table_schema)))
+      new_schema_cols=str(' STRING, '.join(x for x in schema_diff_out) + " STRING")
+      print(new_schema_cols)
+      log_file += """\n{currtime} :::::::::: ALTER QUERY::::::::: '\n' ALTER TABLE {table_name} ADD COLUMNS ({cols});\n :::::""".format(currtime=current_date('datetime'),table_name=table_name,cols=new_schema_cols)
+      log_file += "\n{currtime} :::::::::: Running ALTER statement:\n {new_schema_cols}".format(new_schema_cols=new_schema_cols, currtime=current_date('datetime'))
+      spark.sql("""ALTER TABLE {table_name} ADD COLUMNS ({cols})""".format(table_name=table_name,cols=new_schema_cols))
+      #input_df.select([col(c).cast("string") for c in input_df.columns]).write.format("delta").mode("append").saveAsTable("{table_name}".format(table_name=table_name),overwrite = False)
+    elif len(set(table_schema)-set(input_df_schema))>0:
+      table_diff=[]
+      input_df_cols=[]
+      table_diff.extend(list(set(table_schema)-set(input_df_schema)))
+      input_df_cols.extend(input_df_schema)
+      for cols in table_diff:
+        input_df=input_df.withColumn(cols,lit(None))
+      log_file += "\n{currtime} :::::::::: Existing table has more columns \n".format(currtime=current_date('datetime'))
+      log_file += "\n{currtime} :::::::::: list of columns that are extra in the table: {table_diff}\n".format(table_diff=table_diff, currtime=current_date('datetime'))
+      log_file += "\n{currtime} :::::::::: list of columns in the input_df: {input_df}\n".format(input_df=input_df.columns,currtime=current_date('datetime'))
+      log_file += "\n{currtime} :::::::::: Running insert job with modified DF.... {input_df}\n".format(input_df=input_df.columns,currtime=current_date('datetime') )
+      #input_df.select([col(c).cast("string") for c in input_df.columns]).write.format("delta").mode("append").saveAsTable("{table_name}".format(table_name=table_name),overwrite = False)
+      #log_file += "\n :::::::::{currtime}::::::::::\n Here is the insert script --> \n INSERT INTO {table_name} ({input_df_cols}, {table_diff}) SELECT {input_df_cols}, {table_diff} FROM stripe_tempTable\n ".format(table_name=table_name, input_df_cols=str(input_df_cols).replace("'","").replace("[","").replace("]",""),currtime=current_date('datetime'), table_diff=str(table_diff).replace("'","").replace("[","").replace("]",""))
+      #spark.sql("""INSERT INTO {table_name} ({input_df_cols})  SELECT {input_df_cols} FROM stripe_tempTable""".format(table_name=table_name, input_df_cols=str(input_df_cols).replace("'","").replace("[","").replace("]","")))
+    elif len(set(input_df_schema)-set(table_schema))>0:
+      log_file += "\n{currtime} :::::::::: input df has more columns \n".format(currtime=current_date('datetime'))
+      schema_diff_out=[]
+      schema_diff_out.extend(list(set(input_df_schema)-set(table_schema)))
+      new_schema_cols=str(' STRING, '.join(x for x in schema_diff_out) + " STRING")
+      print(new_schema_cols)
+      log_file += """\n{currtime} :::::::::: ALTER QUERY::::::::: '\n' ALTER TABLE {table_name} ADD COLUMNS ({cols});\n :::::""".format(currtime=current_date('datetime'),table_name=table_name,cols=new_schema_cols)
+      log_file += "\n{currtime} :::::::::: Running ALTER statement:\n {new_schema_cols}".format(new_schema_cols=new_schema_cols, currtime=current_date('datetime'))
+      spark.sql("""ALTER TABLE {table_name} ADD COLUMNS ({cols})""".format(table_name=table_name,cols=new_schema_cols))
+      #spark.sql("""INSERT INTO {table_name} ({table_schema})  SELECT {table_schema} FROM stripe_tempTable""".format(table_name=table_name, input_df_cols=str(input_df_cols).replace("'","").replace("[","").replace("]","")))
+      #input_df.select([col(c).cast("string") for c in input_df.columns]).write.format("delta").mode("append").saveAsTable("{table_name}".format(table_name=table_name),overwrite = False)
+  except Exception as e:
+    log_file += "\n{currtime} ::::::::::  {table_name} load failed with {e}\n".format(table_name=table_name, e=e, currtime=current_date('datetime'))
+    raise
+
+try:
+  stripe_path_output=stripe_partition_path("/mnt/RAW_DATA/PYMT/charges")
+  get_schema_diff(create_base_df("json"))
+  log_file += "\n{currtime} :::::::::: Load succesful".format(currtime=current_date('datetime'))
+  dbutils.notebook.run('/UTILITIES/SEND_MAIL_VIA_SENDGRID',100,{'sender_email' : '','receiver' : '','sender_name' : 'Rajiv','subject' : '{table_name} load completed succesfully'.format(table_name=table_name), 'body' : '{log_file}'.format(log_file=log_file),'content_type' : 'text/html'})
+except Exception as e:
+  log_file += "\n{currtime} :::::::::: Load failed due to the following error: {e}".format(e=e,currtime=current_date('datetime'))
+  dbutils.notebook.run('/UTILITIES/SEND_MAIL_VIA_SENDGRID',100,{'sender_email' : '','receiver' : '','sender_name' : '','subject' : '{table_name} load failed! Please check the error'.format(table_name=table_name), 'body' : '{log_file}'.format(log_file=log_file) ,'content_type' : 'text/html'})
+  
+------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+{
+        "amount": 1804,
+        "amount_refunded": 0,
+        "application": null,
+        "application_fee": null,
+        "application_fee_amount": null,
+        "balance_transaction": null,
+        "captured": false,
+        "created": 1552888812,
+        "currency": "usd",
+        "customer": null,
+        "description": null,
+        "destination": null,
+        "dispute": null,
+        "failure_code": null,
+        "failure_message": null,
+        "fraud_details": {},
+        "id": "ch_1EFEW8JAWJAHRwsM4w0wrtUL",
+        "invoice": null,
+        "livemode": true,
+        "metadata": {
+            "company_id": "125",
+            "customer_id": "ea96f59a-f688-408c-8636-e9beb9f3530e",
+            "delivery_fee": "399",
+            "email": "cristina72602@yahoo.com",
+            "is_delivery_fee_waived": "Y",
+            "order_id": "1552888811295",
+            "order_type": "delivery",
+            "payment_mode": "ApplePay",
+            "store_id": "37137"
+        },
+        "object": "charge",
+        "on_behalf_of": null,
+        "order": null,
+        "outcome": {
+            "network_status": "approved_by_network",
+            "reason": null,
+            "risk_level": "normal",
+            "risk_score": 0,
+            "seller_message": "Payment complete.",
+            "type": "authorized"
+        },
+        "paid": true,
+        "payment_intent": null,
+        "receipt_email": null,
+        "receipt_number": null,
+        "receipt_url": "https://pay.stripe.com/receipts/acct_1AzR1wJAWJAHRwsM/ch_1EFEW8JAWJAHRwsM4w0wrtUL/rcpt_Eifr2ZhTpyTkucCbD1DL8chO41yfPug",
+        "refunded": false,
+        "refunds": {
+            "data": [],
+            "has_more": false,
+            "object": "list",
+            "total_count": 0,
+            "url": "/v1/charges/ch_1EFEW8JAWJAHRwsM4w0wrtUL/refunds"
+        },
+        "review": null,
+        "shipping": null,
+        "source": {
+            "address_city": null,
+            "address_country": null,
+            "address_line1": null,
+            "address_line1_check": null,
+            "address_line2": null,
+            "address_state": null,
+            "address_zip": null,
+            "address_zip_check": null,
+            "brand": "Visa",
+            "country": "US",
+            "customer": null,
+            "cvc_check": null,
+            "dynamic_last4": "1725",
+            "exp_month": 12,
+            "exp_year": 2023,
+            "fingerprint": "ke3VMFybLsqvMAp3",
+            "funding": "debit",
+            "id": "card_1EFEW4JAWJAHRwsMp9aED1Ru",
+            "last4": "6964",
+            "metadata": {},
+            "name": null,
+            "object": "card",
+            "tokenization_method": "apple_pay"
+        },
+        "source_transfer": null,
+        "statement_descriptor": "7-11 37137 Ontario CA",
+        "status": "succeeded",
+        "transfer_data": null,
+        "transfer_group": null
+    }
+	---------------------------------------------------------------------------------------------------------------------
+	|amount|amount_refunded|application|application_fee|application_fee_amount| balance_transaction|captured|   created|currency|          customer|description|destination|dispute|failure_code|failure_message|stripe_report|                  id|invoice|livemode|brand|card|company_id|         customer_id|delivery_fee|               email|exp_month|exp_year|is_delivery_fee_waived|     order_id|order_type|payment_mode|store_id|object|on_behalf_of|order|     network_status|reason|risk_level|risk_score|rule|   seller_message|      type|paid|payment_intent|receipt_email|receipt_number|         receipt_url|refunded|amount|balance_transaction|charge|created|currency| id|object|reason|receipt_number|source_transfer_reversal|status|transfer_reversal|has_more|object|total_count|                 url|review|shipping|address_city|address_country|address_line1|address_line1_check|address_line2|address_state|address_zip|address_zip_check|brand|country|          customer|cvc_check|dynamic_last4|exp_month|exp_year|     fingerprint|funding|                  id|last4|               name|object|tokenization_method|source_transfer|statement_descriptor|   status|transfer_data|transfer_group|
